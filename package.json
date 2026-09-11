@@ -1,0 +1,63 @@
+{
+  "name": "pi-governor",
+  "version": "0.2.0",
+  "description": "Budget governance for the pi coding agent — cap session time, cost, context, tokens and turns, then actually enforce them.",
+  "type": "module",
+  "license": "MIT",
+  "author": "AarnoStormborn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AarnoStormborn/pi-governor.git"
+  },
+  "homepage": "https://github.com/AarnoStormborn/pi-governor#readme",
+  "bugs": {
+    "url": "https://github.com/AarnoStormborn/pi-governor/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "budget",
+    "governance",
+    "cost",
+    "limits",
+    "extension"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "governor.example.json",
+    "governor.schema.json"
+  ],
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@types/node": "^22.19.19",
+    "typebox": "^1.3.7",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "test:watch": "node --test --watch test/*.test.ts",
+    "check": "tsc --noEmit",
+    "pack:dry": "npm pack --dry-run",
+    "smoke": "pi --no-extensions -e ./src/index.ts --list-models __pi_governor_load_check__"
+  }
+}

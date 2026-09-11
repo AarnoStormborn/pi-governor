@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+pi-governor-*.tgz
+
+# Machine-specific pi workspace config (not part of the package)
+.pi/mcp.json

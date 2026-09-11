@@ -1,0 +1,32 @@
+{
+  "$schema": "./governor.schema.json",
+  "enabled": true,
+  "warnRatio": 0.8,
+  "timeMode": "wall",
+  "exposeTool": false,
+  "limits": {
+    "timeMinutes": 90,
+    "costUsd": 5,
+    "contextPercent": 85,
+    "totalTokens": null,
+    "turns": null
+  },
+  "enforcement": {
+    "enabled": true,
+    "onToolCall": "block",
+    "onPrompt": "refuse",
+    "onTurn": "abort",
+    "onContext": "compact",
+    "onPreflight": "warn"
+  },
+  "preflight": {
+    "enabled": true,
+    "assumedOutputTokens": 8000,
+    "useCacheEstimate": true
+  },
+  "status": {
+    "enabled": true,
+    "segments": ["cost", "context", "time", "turns"],
+    "updateIntervalMs": 1000
+  }
+}

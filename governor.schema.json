@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi.dev/schemas/pi-governor.json",
+  "title": "pi-governor configuration",
+  "description": "Budgets and enforcement behaviour for the pi-governor extension.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Master switch. When false the extension is inert."
+    },
+    "warnRatio": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 1,
+      "default": 0.8,
+      "description": "Fraction of a limit at which warnings begin."
+    },
+    "timeMode": {
+      "enum": ["wall", "active"],
+      "default": "wall",
+      "description": "Whether the time limit counts wall-clock time or time spent inside agent runs."
+    },
+    "exposeTool": {
+      "type": "boolean",
+      "default": false,
+      "description": "Register a governor_status tool the model can call."
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Set a limit to null (or omit it) to leave it unenforced.",
+      "properties": {
+        "timeMinutes": {
+          "type": ["number", "null"],
+          "minimum": 0.1,
+          "maximum": 100000,
+          "description": "Session time budget in minutes."
+        },
+        "costUsd": {
+          "type": ["number", "null"],
+          "minimum": 0.0001,
+          "maximum": 10000000,
+          "description": "Session cost budget in USD."
+        },
+        "contextPercent": {
+          "type": ["number", "null"],
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Context window ceiling as a percentage."
+        },
+        "totalTokens": {
+          "type": ["number", "null"],
+          "minimum": 1,
+          "maximum": 1000000000000,
+          "description": "Total token budget."
+        },
+        "turns": {
+          "type": ["number", "null"],
+          "minimum": 1,
+          "maximum": 10000000,
+          "description": "Maximum number of completed assistant turns."
+        }
+      }
+    },
+    "enforcement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Act on exceeded limits instead of only reporting them."
+        },
+        "onToolCall": {
+          "enum": ["block", "allow"],
+          "default": "block",
+          "description": "Block tool calls once a limit is exceeded."
+        },
+        "onPrompt": {
+          "enum": ["refuse", "allow"],
+          "default": "refuse",
+          "description": "Refuse new user prompts once a limit is exceeded."
+        },
+        "onTurn": {
+          "enum": ["abort", "allow"],
+          "default": "abort",
+          "description": "Abort the running agent at the end of a turn once a limit is exceeded."
+        },
+        "onContext": {
+          "enum": ["compact", "observe"],
+          "default": "compact",
+          "description": "Compact the context once the context limit is crossed."
+        },
+        "onPreflight": {
+          "enum": ["warn", "refuse"],
+          "default": "warn",
+          "description": "React before a turn that is projected to cross the cost limit is spent. 'refuse' stops the turn before it is paid for."
+        }
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Price the next turn before it is spent, so a cost limit cannot overshoot by up to one full turn.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable next-turn cost forecasting."
+        },
+        "assumedOutputTokens": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1000000,
+          "default": 8000,
+          "description": "Output tokens to assume when pricing the next turn."
+        },
+        "useCacheEstimate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Credit the observed cache hit rate. Off assumes a cold cache, which is the conservative worst case."
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the footer status line."
+        },
+        "segments": {
+          "type": "array",
+          "uniqueItems": true,
+          "default": ["cost", "context", "time", "turns"],
+          "items": {
+            "enum": ["cost", "context", "time", "tokens", "turns", "toolCalls"]
+          },
+          "description": "Which metrics to render and in what order."
+        },
+        "updateIntervalMs": {
+          "type": "number",
+          "minimum": 250,
+          "maximum": 60000,
+          "default": 1000,
+          "description": "Status refresh interval in milliseconds."
+        }
+      }
+    }
+  }
+}
