@@ -67,6 +67,15 @@ const COMPACTION_COOLDOWN_MS = 15_000;
 /** A tool call reuses cached metrics unless they are older than this. */
 const METRICS_STALE_AFTER_MS = 250;
 
+/**
+ * Limits that justify blocking a tool call.
+ *
+ * `turns` is included, which is correct because the completed-turn counter
+ * discounts the in-flight turn: with `maxTurns: 2`, turn 2's tools run and
+ * turn 3's are blocked, leaving the model one tool-free turn to explain itself.
+ */
+const MID_TURN_LIMITS: readonly LimitKey[] = ["time", "cost", "context", "tokens", "turns"];
+
 interface PersistedGovernorState {
   resetAt?: number | null;
   paused?: boolean;
@@ -151,6 +160,7 @@ export default function piGovernor(pi: ExtensionAPI): void {
 
   let activeMs = 0;
   let activeSince: number | null = null;
+  let turnInFlight = false;
 
   const announced = new Set<string>();
   let lastCompactionAt = 0;
@@ -179,6 +189,7 @@ export default function piGovernor(pi: ExtensionAPI): void {
       activeMs: activeMs + (activeSince === null ? 0 : now - activeSince),
       aggregate,
       context,
+      turnInFlight,
     });
   };
 
@@ -776,6 +787,7 @@ export default function piGovernor(pi: ExtensionAPI): void {
 
     activeMs = 0;
     activeSince = null;
+    turnInFlight = false;
     announced.clear();
     lastCompactionAt = 0;
     lastRefreshAt = 0;
@@ -834,7 +846,16 @@ export default function piGovernor(pi: ExtensionAPI): void {
     updateStatus(ctx);
   });
 
+  /**
+   * True while a turn is executing, so the in-flight turn can be discounted
+   * from the completed-turn count.
+   */
+  pi.on("turn_start", async () => {
+    turnInFlight = true;
+  });
+
   pi.on("turn_end", async (_event, ctx) => {
+    turnInFlight = false;
     if (!isEnabled()) return;
     refresh(ctx);
     announce(ctx);
@@ -854,19 +875,23 @@ export default function piGovernor(pi: ExtensionAPI): void {
     updateStatus(ctx);
   });
 
-  /** Hard stop: refuse further tool calls once a budget is blown. */
+  /** Hard stop: refuse further tool calls once a mid-turn budget is blown. */
   pi.on("tool_call", async (_event, ctx) => {
     if (!isEnforcing() || config.enforcement.onToolCall !== "block") return;
 
     refreshIfStale(ctx);
-    const exceeded = exceededKeys(states);
+    const exceeded = exceededKeys(states).filter((key) => MID_TURN_LIMITS.includes(key));
     if (exceeded.length === 0) return;
 
     const reason = `pi-governor: ${exceeded
       .map(describeLimit)
       .join(", ")} budget exceeded. Stop calling tools and report the situation to the user.`;
     notify(ctx, `⚖ blocked tool call — ${exceeded.map(describeLimit).join(", ")} exceeded`, "error");
-    return { block: true, reason, terminate: true };
+    // Deliberately no `terminate`: the blocked call must come back as a tool
+    // result so the model can tell the user what happened. Stopping the run here
+    // produced an empty response in print mode. `onTurn: "abort"` ends the run
+    // at the next turn boundary instead.
+    return { block: true, reason };
   });
 
   /** Hard stop: do not start new work once a budget is blown. */

@@ -41,7 +41,11 @@ export const DEFAULT_CONFIG: GovernorConfig = {
     enabled: true,
     onToolCall: "block",
     onPrompt: "refuse",
-    onTurn: "abort",
+    // "allow", not "abort": blocking tool calls already forces a tool-free
+    // wrap-up turn, which stops the work *and* lets the model tell the user why.
+    // Aborting threw that final message away. Opt into "abort" for a hard stop
+    // on money/time budgets, where even a wrap-up turn is unwanted spend.
+    onTurn: "allow",
     onContext: "compact",
     onPreflight: "warn",
   },

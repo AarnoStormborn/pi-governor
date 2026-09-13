@@ -187,7 +187,7 @@ describe("shipped artifacts", () => {
       enabled: true,
       onToolCall: "block",
       onPrompt: "refuse",
-      onTurn: "abort",
+      onTurn: "allow",
       onContext: "compact",
       onPreflight: "warn",
     });

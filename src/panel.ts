@@ -9,13 +9,13 @@
  * persisted and when to re-evaluate.
  */
 
-import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Input,
   type SettingItem,
   SettingsList,
+  type SettingsListTheme,
   Text,
   type Component,
 } from "@earendil-works/pi-tui";
@@ -291,25 +291,78 @@ function patchFor(id: string, value: string, config: GovernorConfig): GovernorCo
   }
 }
 
-/** A submenu wrapping a single-line text input for free-form numeric entry. */
+/**
+ * Build a SettingsList theme from the live theme.
+ *
+ * Pi's own `getSettingsListTheme()` reads a module-global theme singleton and
+ * throws "Theme not initialized" if it is not set up yet. The theme passed to
+ * `ctx.ui.custom()` is always available, so deriving from it removes that
+ * ordering dependency entirely.
+ */
+function panelTheme(theme: Theme): SettingsListTheme {
+  return {
+    label: (text, selected) => (selected ? theme.fg("accent", text) : text),
+    value: (text, selected) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
+    description: (text) => theme.fg("dim", text),
+    cursor: theme.fg("accent", "→ "),
+    hint: (text) => theme.fg("dim", text),
+  };
+}
+
+/**
+ * A submenu wrapping a single-line text input for free-form numeric entry.
+ *
+ * The field starts empty with the current value shown as a placeholder rather
+ * than prefilled: `Input.setValue()` parks the cursor at column 0, so a
+ * prefilled value cannot be edited or backspaced the way a user expects.
+ *
+ * Validation happens here, not in the caller, so a bad value keeps the submenu
+ * open with an explanation instead of closing it and silently doing nothing.
+ */
 function numericSubmenu(
   spec: NumericSpec,
   config: GovernorConfig,
+  theme: Theme,
   done: (value?: string) => void,
 ): Component {
   const current = spec.read(config);
+  const container = new Container();
+
+  const heading = new Text(
+    [
+      theme.fg("dim", spec.description),
+      theme.fg("dim", `currently ${spec.format(current)} · Enter blank to keep it · type "off" to clear`),
+    ].join("\n"),
+    1,
+    1,
+  );
+  container.addChild(heading);
+
+  const error = new Text("", 1, 0);
+
   const input = new Input({
-    prompt: `${spec.label} (${spec.min}–${spec.max}, or "off"): `,
+    prompt: `${spec.label}: `,
     placeholder: spec.formatEditing(current),
   });
-  input.setValue(current === null ? "" : String(current));
 
-  const container = new Container();
-  container.addChild(new Text(spec.description, 1, 1));
-  container.addChild(input);
-
-  input.onSubmit = (value: string) => done(value);
+  input.onSubmit = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      // No change.
+      done(undefined);
+      return;
+    }
+    if (spec.parse(trimmed) === undefined) {
+      error.setText(theme.fg("error", `Could not read "${trimmed}". Try a number, or "off".`));
+      input.setValue("");
+      return;
+    }
+    done(trimmed);
+  };
   input.onEscape = () => done(undefined);
+
+  container.addChild(input);
+  container.addChild(error);
 
   return {
     render: (width: number) => container.render(width),
@@ -319,7 +372,7 @@ function numericSubmenu(
 }
 
 /** A submenu of on/off toggles for choosing which metrics the footer shows. */
-function segmentsSubmenu(config: GovernorConfig, done: (value?: string) => void): Component {
+function segmentsSubmenu(config: GovernorConfig, theme: Theme, done: (value?: string) => void): Component {
   const itemId = (segment: StatusSegment) => `segment.${segment}`;
   const selected = new Set<StatusSegment>(config.status.segments);
 
@@ -336,12 +389,12 @@ function segmentsSubmenu(config: GovernorConfig, done: (value?: string) => void)
   };
 
   const container = new Container();
-  container.addChild(new Text("Status line metrics", 1, 1));
+  container.addChild(new Text(theme.fg("dim", "Status line metrics — Enter cycles, Esc closes"), 1, 1));
 
   const list = new SettingsList(
     items,
     Math.min(items.length + 2, 12),
-    getSettingsListTheme(),
+    panelTheme(theme),
     (id, newValue) => {
       const segment = id.replace("segment.", "") as StatusSegment;
       if (newValue === "on") selected.add(segment);
@@ -400,7 +453,7 @@ export async function openGovernorPanel(ctx: ExtensionContext, options: PanelOpt
           label: spec.label,
           description: spec.description,
           currentValue: displayValue(spec.id, config),
-          submenu: (_current, submenuDone) => numericSubmenu(spec, config, submenuDone),
+          submenu: (_current, submenuDone) => numericSubmenu(spec, config, theme, submenuDone),
         });
       }
 
@@ -467,7 +520,7 @@ export async function openGovernorPanel(ctx: ExtensionContext, options: PanelOpt
         label: "Status metrics",
         description: "Which metrics appear in the footer status line",
         currentValue: displayValue("status.segments", config),
-        submenu: (_current, submenuDone) => segmentsSubmenu(config, submenuDone),
+        submenu: (_current, submenuDone) => segmentsSubmenu(config, theme, submenuDone),
       });
 
       return items;
@@ -476,7 +529,7 @@ export async function openGovernorPanel(ctx: ExtensionContext, options: PanelOpt
     const list = new SettingsList(
       buildItems(),
       18,
-      getSettingsListTheme(),
+      panelTheme(theme),
       (id, newValue) => {
         const patch = patchFor(id, newValue, config);
         if (!patch) return;

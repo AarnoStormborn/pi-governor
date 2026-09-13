@@ -109,13 +109,29 @@ When any configured limit is **exceeded** and enforcement is on:
 
 | Trigger | Action | Config key |
 |---|---|---|
-| The model tries to call a tool | Block it and stop the batch | `enforcement.onToolCall: "block"` |
+| The model tries to call a tool | Block it, and hand the reason back as the tool result | `enforcement.onToolCall: "block"` |
 | You submit a new prompt | Refuse it without starting a turn | `enforcement.onPrompt: "refuse"` |
-| A turn finishes while over budget | Abort the run | `enforcement.onTurn: "abort"` |
 | Context crosses its limit | Compact once, preserving decisions and open tasks | `enforcement.onContext: "compact"` |
 | The *next* turn is forecast to cross the **cost** limit | Warn, or refuse before the money is spent | `enforcement.onPreflight: "warn" \| "refuse"` |
+| A turn finishes while over budget | Abort the run. **Off by default** | `enforcement.onTurn: "abort"` |
 
 Each action can be turned off individually (`"allow"` / `"observe"`), or all at once with `enforcement.enabled: false`, `--governor-observe`, or `/governor pause`.
+
+### Why blocking is graceful, and `abort` is not
+
+Blocking a tool call returns the reason to the model as an ordinary tool result, so the model can finish its thought and explain what happened. In a real run with `--governor-max-turns 1`:
+
+> I have to stop here — the pi-governor turn budget was exceeded after the first command.
+>
+> 1. `echo one` → **one** ✅
+> 2. `echo two` → ❌ blocked by pi-governor (turn count budget exceeded)
+> 3. `echo three` → not attempted
+>
+> If you'd like, restart or raise the governor budget and I can run the remaining two commands.
+
+Because blocking already forces a tool-free wrap-up turn, `onTurn` defaults to `allow`. `abort` is a harder stop that ends the run immediately — it budgets nothing extra, but it also throws away the model's explanation. Enable it for money or time ceilings where even one wrap-up turn is unwanted spend.
+
+A limit of N therefore allows **N tool-using turns, then one tool-free turn to wrap up.**
 
 **You are never locked out.** Extension commands are dispatched before the `input` event, so `/governor` always works — even when prompts are being refused. Use it to raise a limit, reset the clock, or pause.
 
@@ -190,7 +206,7 @@ Unknown keys and malformed values are reported and skipped; a broken config can 
     "enabled": true,
     "onToolCall": "block",
     "onPrompt": "refuse",
-    "onTurn": "abort",
+    "onTurn": "allow",
     "onContext": "compact",
     "onPreflight": "warn"
   },
@@ -219,7 +235,7 @@ Unknown keys and malformed values are reported and skipped; a broken config can 
 | `enforcement.enabled` | boolean | `true` | Act on exceeded limits instead of only reporting |
 | `enforcement.onToolCall` | `"block"` \| `"allow"` | `"block"` | Block tool calls when over budget |
 | `enforcement.onPrompt` | `"refuse"` \| `"allow"` | `"refuse"` | Refuse new prompts when over budget |
-| `enforcement.onTurn` | `"abort"` \| `"allow"` | `"abort"` | Abort the run at the end of a turn when over budget |
+| `enforcement.onTurn` | `"abort"` \| `"allow"` | `"allow"` | Abort the run at the end of a turn when over budget. Off by default — see below |
 | `enforcement.onContext` | `"compact"` \| `"observe"` | `"compact"` | Compact when the context limit is crossed |
 | `enforcement.onPreflight` | `"warn"` \| `"refuse"` | `"warn"` | React before a turn forecast to cross the cost limit |
 | `preflight.enabled` | boolean | `true` | Price the next turn before it is spent |
@@ -308,7 +324,7 @@ With `"exposeTool": true` (or `--governor-tool`) the governor registers a `gover
 
 ```bash
 npm install
-npm test        # 123 unit + integration tests, node:test + native TS
+npm test        # 145 unit, integration and panel-rendering tests, node:test + native TS
 npm run check   # tsc --noEmit
 npm run smoke   # load the extension in pi and exit
 npm run pack:dry

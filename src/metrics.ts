@@ -42,6 +42,12 @@ export interface GovernorMetrics {
   wallMs: number;
   /** Milliseconds actually spent inside an agent run. */
   activeMs: number;
+  /**
+   * *Completed* turns. A turn finishes when its tool calls finish, but the
+   * counter is derived from assistant messages, which land before their tools
+   * run. `buildMetrics` therefore discounts the in-flight turn so that a limit
+   * of N allows N whole turns instead of cutting the Nth one short.
+   */
   turns: number;
   toolCalls: number;
   usage: UsageTotals;
@@ -130,6 +136,8 @@ export function buildMetrics(input: {
   activeMs: number;
   aggregate: EntryAggregate;
   context: ContextInfo | null;
+  /** True while a turn is running and its assistant message has landed. */
+  turnInFlight?: boolean;
 }): GovernorMetrics {
   const startedAt = Number.isFinite(input.startedAt) ? input.startedAt : input.now;
   return {
@@ -137,7 +145,9 @@ export function buildMetrics(input: {
     now: input.now,
     wallMs: Math.max(0, input.now - startedAt),
     activeMs: Math.max(0, input.activeMs),
-    turns: input.aggregate.turns,
+    // Discount the turn that is still executing: it has produced an assistant
+    // message but its tools have not finished, so it is not complete yet.
+    turns: input.turnInFlight ? Math.max(0, input.aggregate.turns - 1) : input.aggregate.turns,
     toolCalls: input.aggregate.toolCalls,
     usage: input.aggregate.usage,
     context: input.context,

@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -62,7 +62,7 @@ function createHarness(
     contextWindow: 200_000,
     percent: 50,
   },
-  options: { model?: unknown; trusted?: boolean; cwd?: string } = {},
+  options: { model?: unknown; trusted?: boolean; cwd?: string; projectConfig?: Record<string, unknown> } = {},
 ): Harness {
   const handlers = new Map<string, Handler[]>();
   const sessionEntries: unknown[] = [];
@@ -72,6 +72,14 @@ function createHarness(
   const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
   const compactions: unknown[] = [];
   let aborts = 0;
+
+  // Materialise a project config file so tests can exercise layers that have no
+  // CLI flag (enforcement actions, preflight tuning, ...).
+  const cwd = options.cwd ?? "/tmp/pi-governor-test";
+  if (options.projectConfig) {
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "governor.json"), JSON.stringify(options.projectConfig), "utf8");
+  }
 
   const pi = {
     on(event: string, handler: Handler) {
@@ -106,9 +114,9 @@ function createHarness(
     },
     mode: "tui",
     hasUI: true,
-    cwd: options.cwd ?? "/tmp/pi-governor-test",
+    cwd,
     model: options.model,
-    isProjectTrusted: () => options.trusted ?? false,
+    isProjectTrusted: () => options.trusted ?? Boolean(options.projectConfig),
     sessionManager: {
       getEntries: () => sessionEntries,
       getHeader: () => ({
@@ -227,10 +235,13 @@ describe("pi-governor wiring", () => {
     const results = await harness.dispatch("tool_call", { toolName: "bash", input: {} });
 
     assert.equal(results.length, 1);
-    const result = results[0] as { block: boolean; reason: string; terminate: boolean };
+    const result = results[0] as { block: boolean; reason: string; terminate?: boolean };
     assert.equal(result.block, true);
-    assert.equal(result.terminate, true);
     assert.match(result.reason, /session cost budget exceeded/);
+    // Deliberately not terminating: the block must reach the model as a tool
+    // result so it can explain. `terminate: true` produced empty output in a
+    // real print-mode run.
+    assert.equal(result.terminate, undefined);
 
     await harness.dispatch("session_shutdown");
   });
@@ -306,7 +317,10 @@ describe("pi-governor wiring", () => {
   });
 
   it("aborts a turn and compacts once when the context ceiling is crossed", async () => {
-    const harness = createHarness({ "governor-max-context": "40" });
+    // `abort` is opt-in; enable it explicitly here.
+    const harness = createHarness({ "governor-max-context": "40" }, undefined, {
+      projectConfig: { enforcement: { onTurn: "abort" } },
+    });
     piGovernor(harness.pi);
     harness.sessionEntries.push(assistantEntry());
 
@@ -316,6 +330,19 @@ describe("pi-governor wiring", () => {
 
     assert.equal(harness.aborts, 2, "abort is requested on each over-budget turn");
     assert.equal(harness.compactions.length, 1, "compaction only fires on the crossing");
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("does not abort by default, because blocking tools already stops the work", async () => {
+    const harness = createHarness({ "governor-max-context": "40" });
+    piGovernor(harness.pi);
+    harness.sessionEntries.push(assistantEntry());
+
+    await harness.dispatch("session_start");
+    await harness.dispatch("turn_end", { turnIndex: 0, toolResults: [] });
+
+    assert.equal(harness.aborts, 0);
 
     await harness.dispatch("session_shutdown");
   });
@@ -629,6 +656,84 @@ describe("interactive limit control", () => {
     await setLimit(harness, "");
 
     assert.ok(harness.notifications.some((line) => /pi-governor ·/.test(line)), harness.notifications.join("\n"));
+
+    await harness.dispatch("session_shutdown");
+  });
+});
+
+describe("turn accounting (off-by-one found by running a real session)", () => {
+  /**
+   * A turn's assistant message lands *before* its tool calls run, so a naive
+   * "count assistant messages" turn counter reports the in-flight turn as
+   * complete and blocks the first turn's own tools. Observed in a real session:
+   * `--governor-max-turns 1` blocked the very first `bash` call.
+   */
+  const newHarness = async () => {
+    const harness = createHarness({ "governor-max-turns": "1" });
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+    return harness;
+  };
+
+  it("does not count the in-flight turn as complete", async () => {
+    const harness = await newHarness();
+
+    // Turn 1: assistant message has landed, its tools are starting.
+    harness.sessionEntries.push(assistantEntry({ toolCalls: 1 }));
+    await harness.dispatch("turn_start");
+
+    const results = await harness.dispatch("tool_call", { toolName: "bash", input: {} });
+    assert.deepEqual(results, [undefined], "turn 1's own tools must be allowed");
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("blocks the next turn's tools once that turn is complete", async () => {
+    const harness = await newHarness();
+
+    harness.sessionEntries.push(assistantEntry({ toolCalls: 1 }));
+    await harness.dispatch("turn_start");
+    await harness.dispatch("tool_call", { toolName: "bash", input: {} });
+    await harness.dispatch("turn_end", { turnIndex: 0, toolResults: [] });
+
+    // Turn 2 begins: a second assistant message lands.
+    harness.sessionEntries.push(assistantEntry({ toolCalls: 1 }));
+    await harness.dispatch("turn_start");
+
+    const results = await harness.dispatch("tool_call", { toolName: "bash", input: {} });
+    const blocked = results[0] as { block: boolean; reason: string } | undefined;
+    assert.equal(blocked?.block, true, "turn 2's tools must be blocked");
+    assert.match(blocked?.reason ?? "", /turn count budget exceeded/);
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("still blocks on the first tool call for non-turn limits", async () => {
+    // Cost is not turn-scoped, so it must block immediately.
+    const harness = createHarness({ "governor-max-cost": "0.01" });
+    piGovernor(harness.pi);
+    harness.sessionEntries.push(assistantEntry({ cost: 0.5, toolCalls: 1 }));
+    await harness.dispatch("session_start");
+    await harness.dispatch("turn_start");
+
+    const results = await harness.dispatch("tool_call", { toolName: "bash", input: {} });
+    assert.equal((results[0] as { block: boolean } | undefined)?.block, true);
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("reports both responses of a turn-and-wrap-up run", async () => {
+    // maxTurns 1 leaves the model one tool-free turn to explain itself, so a
+    // real run ends with two assistant messages against a limit of one.
+    const harness = await newHarness();
+    harness.sessionEntries.push(assistantEntry({ toolCalls: 1 }));
+    await harness.dispatch("turn_start");
+    await harness.dispatch("turn_end", { turnIndex: 0, toolResults: [] });
+    harness.sessionEntries.push(assistantEntry({ toolCalls: 0 }));
+    await harness.dispatch("turn_end", { turnIndex: 1, toolResults: [] });
+
+    // Over budget, but the block still happens on later tool calls.
+    assert.match(harness.statuses.get("governor") ?? "", /\/1t/);
 
     await harness.dispatch("session_shutdown");
   });

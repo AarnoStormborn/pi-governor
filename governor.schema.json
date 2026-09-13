@@ -87,8 +87,8 @@
         },
         "onTurn": {
           "enum": ["abort", "allow"],
-          "default": "abort",
-          "description": "Abort the running agent at the end of a turn once a limit is exceeded."
+          "default": "allow",
+          "description": "Abort the running agent at the end of a turn once a limit is exceeded. Off by default because blocking tool calls already forces a tool-free wrap-up that keeps the model's explanation; enable for a hard stop where even that turn is unwanted spend."
         },
         "onContext": {
           "enum": ["compact", "observe"],
