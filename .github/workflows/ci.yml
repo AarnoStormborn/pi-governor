@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines allows >=22.6.0; test the floor and the current LTS.
+        node-version: ["22.19.0", "24.x"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the tarball
+        run: npm pack
+
+      - name: Fail if tests leaked into the package
+        run: |
+          set -euo pipefail
+          TARBALL=$(ls pi-governor-*.tgz)
+          CONTENTS=$(tar tzf "$TARBALL")
+          echo "$CONTENTS"
+          if echo "$CONTENTS" | grep -qE '^package/test/'; then
+            echo "::error::test files must not be published"
+            exit 1
+          fi
+          if echo "$CONTENTS" | grep -qE 'node_modules'; then
+            echo "::error::node_modules must not be published"
+            exit 1
+          fi
+          for required in package/package.json package/README.md package/LICENSE package/src/index.ts; do
+            if ! echo "$CONTENTS" | grep -qx "$required"; then
+              echo "::error::missing $required"
+              exit 1
+            fi
+          done
+
+      - name: Verify the packaged extension loads without peer dependencies
+        run: |
+          set -euo pipefail
+          TARBALL=$(ls pi-governor-*.tgz)
+          mkdir -p /tmp/pkgcheck && tar xzf "$TARBALL" -C /tmp/pkgcheck
+          # pi is unavailable on CI, so assert the published layout instead:
+          # the manifest points at a file that exists, and no runtime
+          # dependency on the harness survives in the published source.
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("/tmp/pkgcheck/package/package.json", "utf8"));
+            const entry = pkg.pi.extensions[0];
+            if (!fs.existsSync("/tmp/pkgcheck/package/" + entry.replace(/^\.\//, ""))) {
+              throw new Error("pi manifest entry does not exist: " + entry);
+            }
+            if (!pkg.keywords.includes("pi-package")) throw new Error("missing pi-package keyword");
+            for (const dep of Object.keys(pkg.dependencies ?? {})) {
+              throw new Error("runtime dependency would need bundling: " + dep);
+            }
+            console.log("package layout OK, entry:", entry);
+          '

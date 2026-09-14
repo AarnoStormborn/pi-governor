@@ -26,12 +26,13 @@
   "files": [
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "governor.example.json",
     "governor.schema.json"
   ],
   "engines": {
-    "node": ">=22.6.0"
+    "node": ">=22.19.0"
   },
   "publishConfig": {
     "access": "public"
@@ -46,6 +47,17 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@earendil-works/pi-tui": "^0.85.1",
@@ -56,8 +68,10 @@
   "scripts": {
     "test": "node --test test/*.test.ts",
     "test:watch": "node --test --watch test/*.test.ts",
+    "coverage": "node --test --experimental-test-coverage test/*.test.ts",
     "check": "tsc --noEmit",
     "pack:dry": "npm pack --dry-run",
-    "smoke": "pi --no-extensions -e ./src/index.ts --list-models __pi_governor_load_check__"
+    "smoke": "pi --no-extensions -e ./src/index.ts --list-models __pi_governor_load_check__",
+    "prepublishOnly": "npm run check && npm test"
   }
 }

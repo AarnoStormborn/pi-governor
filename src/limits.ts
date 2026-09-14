@@ -5,7 +5,6 @@
  * the UI and the enforcement layer both read from. Pure and unit tested.
  */
 
-import { formatLimitValue } from "./format.ts";
 import { LIMIT_LABELS, LIMIT_KEYS, type GovernorConfig, type LimitKey } from "./types.ts";
 import type { GovernorMetrics } from "./metrics.ts";
 
@@ -145,25 +144,6 @@ export function projectedOverspendKeys(states: readonly LimitState[]): LimitKey[
     .map((state) => state.key);
 }
 
-/** Keys that are configured (whether or not their metric is known yet). */
-export function configuredKeys(states: readonly LimitState[]): LimitKey[] {
-  return states.filter((state) => state.limit !== null).map((state) => state.key);
-}
-
 export function describeLimit(key: LimitKey): string {
   return LIMIT_LABELS[key];
-}
-
-/** Human sentence describing one limit's current position. */
-export function describeState(state: LimitState): string {
-  const label = describeLimit(state.key);
-  if (state.status === "unset") return `${label}: no limit`;
-  if (state.status === "unknown") {
-    return `${label}: ${formatLimitValue(state.key, state.limit)} budget (usage unknown)`;
-  }
-  const percent = Math.round((state.ratio ?? 0) * 100);
-  return `${label}: ${formatLimitValue(state.key, state.value)} of ${formatLimitValue(
-    state.key,
-    state.limit,
-  )} (${percent}%)`;
 }

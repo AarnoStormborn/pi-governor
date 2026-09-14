@@ -3,13 +3,12 @@ import { describe, it } from "node:test";
 import { DEFAULT_CONFIG, mergeConfig } from "../src/config.ts";
 import {
   classify,
-  configuredKeys,
-  describeState,
   evaluateLimits,
   exceededKeys,
   hasAnyLimit,
   limitFor,
   overallStatus,
+  projectedOverspendKeys,
   valueFor,
 } from "../src/limits.ts";
 import { emptyUsage, type GovernorMetrics } from "../src/metrics.ts";
@@ -128,10 +127,9 @@ describe("aggregate helpers", () => {
     assert.equal(overallStatus(evaluateLimits(metrics({ turns: 1, context: null }), config)), "ok");
   });
 
-  it("lists exceeded and configured keys", () => {
+  it("lists exceeded keys", () => {
     const states = evaluateLimits(metrics({ turns: 5, context: null }), config);
     assert.deepEqual(exceededKeys(states), ["turns"]);
-    assert.deepEqual(configuredKeys(states).sort(), ["context", "cost", "turns"]);
   });
 
   it("detects whether anything is configured", () => {
@@ -139,14 +137,13 @@ describe("aggregate helpers", () => {
     assert.equal(hasAnyLimit(config), true);
   });
 
-  it("describes a state in the limit's own units", () => {
-    const states = evaluateLimits(metrics({ turns: 5 }), config);
-    const turns = states.find((state) => state.key === "turns");
-    assert.ok(turns);
-    assert.equal(describeState(turns), "turn count: 5 of 5 (100%)");
+  it("reports a projected overspend only when the actual value is still under", () => {
+    const projection = { turnCost: 0.5, totalCost: 5.5, usedCacheEstimate: true };
+    const under = evaluateLimits(metrics(), config, projection);
+    assert.deepEqual(projectedOverspendKeys(under), ["cost"]);
 
-    const unknown = evaluateLimits(metrics({ context: null }), config).find((state) => state.key === "context");
-    assert.ok(unknown);
-    assert.match(describeState(unknown), /context usage: 90% budget \(usage unknown\)/);
+    // Already over: the ordinary exceeded path handles it, not pre-flight.
+    const over = evaluateLimits(metrics({ usage: { ...emptyUsage(), cost: 2 } }), config, projection);
+    assert.deepEqual(projectedOverspendKeys(over), []);
   });
 });

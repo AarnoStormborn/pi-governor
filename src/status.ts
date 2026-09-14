@@ -225,13 +225,3 @@ export function renderReportLines(
 
   return lines;
 }
-
-/** Notification text summarising an exceeded budget. */
-export function exceededSummary(states: readonly LimitState[], enforcing: boolean): string {
-  const names = states.filter((state) => state.status === "exceeded").map((state) => describeLimit(state.key));
-  const suffix = enforcing ? " — enforcing" : " — observing only";
-  return `${names.join(", ")} budget exceeded${suffix}`;
-}
-
-/** Placeholder used by the status line for an unknown value. */
-export const UNKNOWN_MARKER = "?";

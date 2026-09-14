@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import piGovernor from "../src/index.ts";
 
 const tempDirs: string[] = [];
@@ -52,6 +53,9 @@ interface Harness {
   compactions: unknown[];
   tools: Record<string, unknown>[];
   commands: Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>;
+  component: { render(width: number): string[]; handleInput(data: string): void } | null;
+  componentClosed: boolean;
+  componentClosedWith: unknown;
   dispatch: (event: string, payload?: Record<string, unknown>) => Promise<unknown[]>;
 }
 
@@ -72,6 +76,10 @@ function createHarness(
   const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
   const compactions: unknown[] = [];
   let aborts = 0;
+  /** Component captured from the most recent `ctx.ui.custom()` call. */
+  let capturedComponent: { render(width: number): string[]; handleInput(data: string): void } | null = null;
+  let capturedClosed = false;
+  let capturedClosedWith: unknown = undefined;
 
   // Materialise a project config file so tests can exercise layers that have no
   // CLI flag (enforcement actions, preflight tuning, ...).
@@ -110,6 +118,16 @@ function createHarness(
       },
       setStatus: (key: string, text: string | undefined) => {
         statuses.set(key, text);
+      },
+      custom: (
+        factory: (tui: unknown, theme: unknown, kb: unknown, done: (value: unknown) => void) => unknown,
+      ) => {
+        const stubTheme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+        capturedComponent = factory({ requestRender: () => {} }, stubTheme, {}, (value: unknown) => {
+          capturedClosed = true;
+          capturedClosedWith = value;
+        }) as { render(width: number): string[]; handleInput(data: string): void };
+        return Promise.resolve(undefined);
       },
     },
     mode: "tui",
@@ -160,6 +178,15 @@ function createHarness(
     compactions,
     tools,
     commands,
+    get component() {
+      return capturedComponent;
+    },
+    get componentClosed() {
+      return capturedClosed;
+    },
+    get componentClosedWith() {
+      return capturedClosedWith;
+    },
     dispatch,
   } as Harness & { aborts: number };
 }
@@ -734,6 +761,260 @@ describe("turn accounting (off-by-one found by running a real session)", () => {
 
     // Over budget, but the block still happens on later tool calls.
     assert.match(harness.statuses.get("governor") ?? "", /\/1t/);
+
+    await harness.dispatch("session_shutdown");
+  });
+});
+
+describe("commands", () => {
+  const run = async (harness: Harness, args: string) => {
+    const governor = harness.commands.get("governor");
+    assert.ok(governor, "/governor must be registered");
+    await governor.handler(args, harness.ctx);
+  };
+
+  it("reset restarts the session clock and clears warnings", async () => {
+    const harness = createHarness({ "governor-max-cost": "5" });
+    piGovernor(harness.pi);
+    harness.sessionEntries.push(assistantEntry({ cost: 4.5 }));
+    await harness.dispatch("session_start");
+    await harness.dispatch("turn_end", { turnIndex: 0, toolResults: [] });
+    assert.ok(harness.notifications.some((line) => /at 90% of budget/.test(line)), "warned first");
+
+    await run(harness, "reset");
+
+    // Clock restarted and the warn latch cleared, so it can fire again.
+    assert.match(harness.statuses.get("governor") ?? "", /0s/);
+    const before = harness.notifications.length;
+    await harness.dispatch("turn_end", { turnIndex: 1, toolResults: [] });
+    assert.ok(harness.notifications.length > before, "warning re-armed after reset");
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("reload picks up an edited project config", async () => {
+    const cwd = tempProject();
+    const harness = createHarness({}, undefined, { cwd, trusted: true, model: PRICED_MODEL });
+    piGovernor(harness.pi);
+    await run(harness, "max-cost 5");
+    await harness.dispatch("session_start");
+    assert.match(harness.statuses.get("governor") ?? "", /\$0\.00\/\$5\.00/);
+
+    // Change the file underneath the session, as a manual edit would.
+    const path = join(cwd, ".pi", "governor.json");
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, any>;
+    parsed.limits.costUsd = 42;
+    writeFileSync(path, JSON.stringify(parsed), "utf8");
+
+    await run(harness, "reload");
+    assert.match(harness.statuses.get("governor") ?? "", /\$0\.00\/\$42\.00/);
+    assert.ok(harness.notifications.some((line) => /loaded .*governor\.json/.test(line)));
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("help lists the available subcommands", async () => {
+    const harness = createHarness();
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+
+    await run(harness, "help");
+    const help = harness.notifications.find((line) => /max-cost/.test(line));
+    assert.ok(help, harness.notifications.join("\n"));
+    assert.match(help, /\/governor reset/);
+    assert.match(help, /pause\|resume/);
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("completes subcommands and returns null when nothing matches", async () => {
+    const harness = createHarness();
+    piGovernor(harness.pi);
+    const command = harness.commands.get("governor") as unknown as {
+      getArgumentCompletions?: (prefix: string) => Array<{ value: string }> | null;
+    };
+    assert.ok(command.getArgumentCompletions);
+
+    const maxed = command.getArgumentCompletions("max-");
+    assert.deepEqual(
+      maxed?.map((item) => item.value).sort(),
+      ["max-context", "max-cost", "max-time", "max-tokens", "max-turns"],
+    );
+    assert.deepEqual(command.getArgumentCompletions("off-")?.map((i) => i.value).sort(), [
+      "off-context",
+      "off-cost",
+      "off-time",
+      "off-tokens",
+      "off-turns",
+    ]);
+    assert.equal(command.getArgumentCompletions("zzz"), null);
+  });
+
+  it("opens the report overlay in TUI mode and closes on escape", async () => {
+    const harness = createHarness({ "governor-max-cost": "5" }, undefined, { model: PRICED_MODEL });
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+
+    await run(harness, "report");
+
+    const component = harness.component;
+    assert.ok(component, "report overlay was not created");
+    const lines = component.render(80);
+    const text = lines.join("\n");
+    assert.match(text, /pi-governor ·/);
+    assert.match(text, /session cost/);
+    assert.match(text, /forecast/);
+    assert.ok(
+      lines.every((line) => visibleWidth(line) <= 80),
+      "report overlay exceeded the render width",
+    );
+
+    component.handleInput("\x1b"); // escape
+    assert.equal(harness.componentClosed, true);
+
+    await harness.dispatch("session_shutdown");
+  });
+});
+
+describe("compaction and model events", () => {
+  it("survives session_compact and re-arms the crossing", async () => {
+    const harness = createHarness({ "governor-max-context": "40" });
+    piGovernor(harness.pi);
+    harness.sessionEntries.push(assistantEntry());
+    await harness.dispatch("session_start");
+
+    await harness.dispatch("session_compact", { reason: "manual" });
+    assert.ok(harness.statuses.get("governor"));
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("survives a failed compaction", async () => {
+    const harness = createHarness({ "governor-max-context": "40" });
+    piGovernor(harness.pi);
+    harness.sessionEntries.push(assistantEntry());
+    await harness.dispatch("session_start");
+
+    await harness.dispatch("session_compact_failed", { reason: "threshold", errorMessage: "boom" });
+    assert.ok(harness.statuses.get("governor"));
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("refreshes the status on a thinking level change", async () => {
+    const harness = createHarness({ "governor-max-cost": "5" });
+    piGovernor(harness.pi);
+    harness.sessionEntries.push(assistantEntry({ cost: 1 }));
+    await harness.dispatch("session_start");
+
+    await harness.dispatch("thinking_level_select", { level: "high" });
+    assert.match(harness.statuses.get("governor") ?? "", /\$1\.00/);
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("reports configuration problems on session start", async () => {
+    const cwd = tempProject();
+    const harness = createHarness({}, undefined, {
+      cwd,
+      projectConfig: { limits: { costUsd: "cheap" } },
+      model: PRICED_MODEL,
+    });
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+
+    const diagnostic = harness.notifications.find((line) => /configuration problems/.test(line));
+    assert.ok(diagnostic, harness.notifications.join("\n"));
+    assert.match(diagnostic, /limits\.costUsd must be a number or null/);
+
+    await harness.dispatch("session_shutdown");
+  });
+});
+
+describe("panel integration and active-time accounting", () => {
+  it("opens the settings panel from a bare /governor in TUI mode", async () => {
+    const cwd = tempProject();
+    const harness = createHarness({}, undefined, { cwd, trusted: true, model: PRICED_MODEL });
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+
+    const governor = harness.commands.get("governor");
+    assert.ok(governor);
+    await governor.handler("", harness.ctx);
+
+    const component = harness.component;
+    assert.ok(component, "panel was not opened");
+    const text = component.render(80).join("\n");
+    assert.match(text, /pi-governor/);
+    assert.match(text, /Cost limit/);
+    // Trusted project: the panel points at the project config path. The path
+    // wraps across lines at width 80, so match its end rather than the whole.
+    assert.match(text, /saving to/);
+    assert.match(text, /governor\.json/);
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("marks the target as session-only when the project is untrusted", async () => {
+    const cwd = tempProject();
+    const harness = createHarness({}, undefined, { cwd, trusted: false, model: PRICED_MODEL });
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+
+    const governor = harness.commands.get("governor");
+    assert.ok(governor);
+    await governor.handler("", harness.ctx);
+
+    assert.match(harness.component?.render(80).join("\n") ?? "", /untrusted — session only/);
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("does not open the panel outside TUI mode", async () => {
+    const harness = createHarness({ "governor-max-cost": "5" }, undefined, { model: PRICED_MODEL });
+    (harness.ctx as unknown as { mode: string }).mode = "rpc";
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+
+    const governor = harness.commands.get("governor");
+    assert.ok(governor);
+    await governor.handler("", harness.ctx);
+
+    // Falls back to the printed report instead of a component.
+    assert.equal(harness.component, null);
+    assert.ok(harness.notifications.some((line) => /pi-governor ·/.test(line)));
+
+    await harness.dispatch("session_shutdown");
+  });
+
+  it("accumulates active time only while an agent run is in flight", async () => {
+    const cwd = tempProject();
+    const harness = createHarness({}, undefined, {
+      cwd,
+      projectConfig: { timeMode: "active" },
+      model: PRICED_MODEL,
+    });
+    piGovernor(harness.pi);
+    await harness.dispatch("session_start");
+
+    // Idle time must not count.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    await harness.dispatch("agent_start");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await harness.dispatch("agent_settled");
+
+    const governor = harness.commands.get("governor");
+    assert.ok(governor);
+    await governor.handler("report", harness.ctx);
+
+    const report = harness.component?.render(100).join("\n") ?? "";
+    const elapsed = /elapsed\s+(\S+) wall · (\S+) active/.exec(report);
+    assert.ok(elapsed, report);
+    const active = elapsed[2] ?? "";
+    // Only ~1.1s was spent inside an agent run, so active time must be ~1s
+    // while wall time (the harness header is 60s old) is far larger.
+    assert.equal(active, "1s", `active time should cover only the agent run, got ${active}`);
 
     await harness.dispatch("session_shutdown");
   });

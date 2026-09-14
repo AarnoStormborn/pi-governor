@@ -573,6 +573,3 @@ function mergeInto(config: GovernorConfig, patch: GovernorConfigPatch): Governor
 }
 
 export { NUMERIC_SPECS };
-
-/** Limit keys the panel can drive, for documentation and tests. */
-export const PANEL_LIMIT_KEYS: readonly LimitKey[] = ["cost", "time", "context", "tokens", "turns"];
